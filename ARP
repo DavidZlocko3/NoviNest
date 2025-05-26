@@ -1,0 +1,248 @@
+#include <Keypad.h>
+#include <LiquidCrystal_I2C.h>
+#include <DHT.h>
+#include <IRremote.h>
+
+#define TRIG_PIN 8
+#define ECHO_PIN 9
+#define DHT_PIN 2
+#define BUZZER_PIN A1
+#define LED_PIN 13
+#define FAN_PIN A2
+#define IR_PIN A0
+
+DHT dht(DHT_PIN, DHT11);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+IRrecv irrecv(IR_PIN);
+decode_results results;
+
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {3, 4, 5, 6};
+byte colPins[COLS] = {7, 10, 11, 12};
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+String storedPIN = "1234";  
+String inputPIN = "";
+bool systemLocked = false;
+bool authorized = false;
+bool alarmActive = false;
+unsigned long startTime = 0;
+
+long readDistanceCM() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  return duration * 0.034 / 2;
+}
+
+void activateAlarm() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  digitalWrite(LED_PIN, HIGH);
+  alarmActive = true;
+  systemLocked = true;
+  authorized = false;
+  lcd.clear();
+  lcd.print("ALARM AKTIVAN!");
+  Serial.println("[ALARM] Udaljenost < 30cm!");
+}
+
+void deactivateAlarm() {
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
+  alarmActive = false;
+  systemLocked = false;
+  lcd.clear();
+  lcd.print("PIN OK. Sustav OK");
+  Serial.println("[INFO] PIN ispravan, sustav otkljucan.");
+  delay(2000);
+}
+
+void checkPIN() {
+  if (inputPIN == storedPIN) {
+    authorized = true;
+    deactivateAlarm();
+  } else {
+    lcd.clear();
+    lcd.print("PIN netocan!");
+    Serial.println("[ERROR] Pogresan PIN.");
+    delay(2000);
+  }
+  inputPIN = "";
+}
+
+void readDHT() {
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+  Serial.print("[DHT] Trenutna temp: ");
+  Serial.println(temp);
+  if (isnan(temp) || isnan(hum)) return;
+  Serial.print("[DHT] Temp: "); Serial.print(temp); Serial.print(" C  Vlaga: "); Serial.print(hum); Serial.println(" %");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Temp:"); lcd.print(temp); lcd.print("C");
+  lcd.setCursor(0, 1);
+  lcd.print("Vlaga:"); lcd.print(hum); lcd.print("%");
+  
+  if (temp > 35.0) {
+    digitalWrite(FAN_PIN, HIGH);
+    Serial.println("[FAN] Ukljucen (temp > 35C)");
+  } else {
+    digitalWrite(FAN_PIN, LOW);
+  }
+}
+
+void handleIR() {
+  if (irrecv.decode(&results)) {
+    unsigned long code = results.value;
+    if (code == 0xFFFFFFFF) {
+      irrecv.resume();
+      return;
+    }
+
+    if (code == 0xFFA25D) { 
+      lcd.clear();
+      lcd.print("Nova sifra:");
+      Serial.println("[IR] Unos nove sifre preko tipkovnice");
+      inputPIN = "";
+
+      while (inputPIN.length() < 4) {
+        char key = keypad.getKey();
+        if (key && isDigit(key)) {
+          inputPIN += key;
+          lcd.setCursor(inputPIN.length() - 1, 1);
+          lcd.print(key);
+        }
+      }
+
+      storedPIN = inputPIN;
+      inputPIN = "";
+      lcd.clear();
+      lcd.print("Sifra postavljena");
+      Serial.println("[IR] Nova sifra spremljena.");
+      delay(2000);
+    } 
+    else if (code == 0xFF6897) { 
+      long distance = readDistanceCM();
+      lcd.clear();
+      lcd.print("Udalj: ");
+      lcd.print(distance);
+      lcd.print(" cm");
+      Serial.print("[IR] Prikaz udaljenosti: ");
+      Serial.println(distance);
+      delay(2000);
+      lcd.clear();
+    }
+    else if (code == 0xFF30CF) { 
+    unsigned long elapsedMillis = millis() - startTime;
+    unsigned long elapsedSec = elapsedMillis / 1000;
+    unsigned int minutes = elapsedSec / 60;
+    unsigned int seconds = elapsedSec % 60;
+
+    lcd.clear();
+    lcd.print("Vrijeme:");
+    lcd.setCursor(0, 1);
+    lcd.print(minutes);
+    lcd.print("m ");
+    lcd.print(seconds);
+    lcd.print("s");
+    delay(2000);
+    lcd.clear();
+    }
+    else if (code == 0xFF18E7) {  
+  lcd.clear();
+  lcd.print("PIN: ");
+  lcd.print(storedPIN); 
+  delay(2000);
+  lcd.clear();
+}
+else if (code == 0xFF7A85) {  
+  unsigned long elapsedMillis = millis() - startTime;
+  unsigned long elapsedSec = elapsedMillis / 1000;
+  unsigned int minutes = elapsedSec / 60;
+  unsigned int seconds = elapsedSec % 60;
+
+  lcd.clear();
+  lcd.print("Aktivan:");
+  lcd.setCursor(0, 1);
+  lcd.print(minutes);
+  lcd.print("m ");
+  lcd.print(seconds);
+  lcd.print("s");
+  delay(2000);
+  lcd.clear();
+}
+    else {
+    }
+
+    irrecv.resume();
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  lcd.init();
+  lcd.backlight();
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(FAN_PIN, OUTPUT);
+
+  dht.begin();
+  irrecv.enableIRIn();
+  lcd.print("Sustav spreman");
+  delay(2000);
+  lcd.clear();
+  digitalWrite(FAN_PIN, LOW);
+  startTime = millis();
+}
+
+void loop() {
+  if (!systemLocked) {
+  long distance = readDistanceCM();
+  Serial.print("[SENSOR] Udaljenost: "); Serial.print(distance); Serial.println(" cm");
+
+  if (distance < 10 && !alarmActive) {
+    activateAlarm();
+  }
+}
+
+  if (systemLocked && !authorized) {
+  lcd.setCursor(0, 0);
+  lcd.print("PIN: ");
+  char key = keypad.getKey();
+
+  if (key) {
+    if (isDigit(key) && inputPIN.length() < 4) {
+      inputPIN += key;
+      lcd.setCursor(5 + inputPIN.length() - 1, 0);
+      lcd.print("*");
+    } else if (key == '#') {
+      checkPIN();
+      lcd.clear();  
+    } else if (key == '*') {
+      inputPIN = "";
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("PIN: ");
+    }
+  }
+}
+
+  if (authorized && !systemLocked) {
+    readDHT();
+    delay(3000);
+  }
+
+  handleIR();
+}
